@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Date with a Book</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="top">
+    <h1>Date <span>with a</span> Book</h1>
+    <nav class="tabs">
+      <button data-view="add" class="active">Add a Book</button>
+      <button data-view="inventory">Inventory</button>
+      <button data-view="settings">Settings</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ADD -->
+    <section class="view" id="view-add">
+      <div class="card">
+        <h2>Find the book</h2>
+        <form id="lookup-form" class="row">
+          <div class="grow">
+            <label for="q">ISBN or title</label>
+            <input type="text" id="q" placeholder="e.g. 9780553293357 or The Night Circus" autocomplete="off" autofocus>
+          </div>
+          <div style="flex: 0 1 220px">
+            <label for="author">Author <span class="hint">(optional)</span></label>
+            <input type="text" id="author" autocomplete="off">
+          </div>
+          <button type="submit" class="primary" id="lookup-btn">Look up</button>
+          <span class="or">or</span>
+          <button type="button" id="photo-btn" title="Photo of the cover, back, or barcode">Upload photo…</button>
+          <input type="file" id="photo-input" accept="image/*" hidden>
+          <button type="button" id="scan-btn">Scan barcode (webcam)</button>
+        </form>
+        <div class="scanner" id="scanner" hidden>
+          <video id="scan-video" muted playsinline></video>
+          <p class="hint">Hold the barcode on the back of the book up to the camera. <button type="button" class="small" id="scan-stop">Cancel</button></p>
+        </div>
+        <div class="notice" id="lookup-msg"></div>
+      </div>
+
+      <div class="card" id="candidates-card" hidden>
+        <h2>Which one is it?</h2>
+        <div class="candidates" id="candidates"></div>
+        <p class="hint" style="margin-top:.8rem">Don't see it? Try adding the author, or type the ISBN from the back cover.</p>
+      </div>
+
+      <div class="card" id="result-card" hidden>
+        <div class="notice warn" id="existing-msg" hidden></div>
+        <div class="result">
+          <div class="cover" id="result-cover"></div>
+          <div>
+            <div id="result-form"></div>
+            <div class="notice warn" id="ai-warnings"></div>
+            <div class="actions">
+              <button class="primary" id="save-btn">Save to inventory</button>
+              <span class="hint">Qty</span>
+              <input type="number" id="save-qty" value="1" min="1" style="width:4.5rem">
+              <span style="flex:1"></span>
+              <input type="text" id="nudge" placeholder="Optional: “spookier”, “more romantic”…" style="width:240px">
+              <button id="regen-btn">Regenerate description</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- INVENTORY -->
+    <section class="view" id="view-inventory" hidden>
+      <div class="toolbar">
+        <input type="search" id="inv-search" placeholder="Search title, author, code, category…">
+        <select id="inv-sort">
+          <option value="created_desc">Date entered — newest first</option>
+          <option value="created_asc">Date entered — oldest first</option>
+          <option value="updated_desc">Recently updated</option>
+          <option value="title">Title A–Z</option>
+          <option value="category">Category</option>
+          <option value="quantity_desc">Quantity — most first</option>
+        </select>
+        <span class="spacer"></span>
+        <span class="hint" id="inv-selected"></span>
+        <button id="export-btn">Export CSV</button>
+        <button class="primary" id="labels-btn">Print labels</button>
+      </div>
+      <table class="inv">
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="inv-all" title="Select all"></th>
+            <th>Code</th><th></th><th>Title</th><th>Category</th><th>Reader age</th>
+            <th>Qty</th><th>Entered</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="inv-body"></tbody>
+      </table>
+      <p class="hint" style="margin-top:.6rem">Export and Print use the checked rows, or every row shown if none are checked.</p>
+    </section>
+
+    <!-- SETTINGS -->
+    <section class="view" id="view-settings" hidden>
+      <div class="card">
+        <h2>Categories</h2>
+        <p class="hint">One per line. The AI picks exactly one of these for each book (and adds a free-form subgenre). Changing this list doesn't alter books already saved.</p>
+        <textarea id="cat-list" rows="16" style="font-family: var(--sans); font-size: .95rem"></textarea>
+        <div class="actions"><button class="primary" id="cat-save">Save categories</button></div>
+      </div>
+      <div class="card">
+        <h2>Reader age groups</h2>
+        <p id="age-list"></p>
+        <h2 style="margin-top:1rem">Labels</h2>
+        <p class="hint">Label size, layout and which fields print are set on the <a href="/labels" target="_blank">label page</a> — use “Save as default” there.</p>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="edit-dlg">
+    <div class="dlg-body">
+      <h2 id="edit-title">Edit book</h2>
+      <div id="edit-form"></div>
+      <div class="notice warn" id="edit-warnings"></div>
+      <div class="actions">
+        <button class="primary" id="edit-save">Save changes</button>
+        <button id="edit-regen">Regenerate description</button>
+        <button id="edit-cancel">Close</button>
+        <span style="flex:1"></span>
+        <button class="danger" id="edit-delete">Delete book</button>
+      </div>
+      <div class="history" id="edit-history"></div>
+    </div>
+  </dialog>
+
+  <div id="toast"></div>
+
+  <script src="https://unpkg.com/@zxing/browser@0.1.5/umd/zxing-browser.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

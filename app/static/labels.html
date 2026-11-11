@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Book Labels</title>
+  <style id="page-style"></style>
+  <style>
+    :root { --ink: #2b2420; --muted: #7a6e66; --line: #e6ddd2; --accent: #8c3b4a; --paper: #faf6f0; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Ubuntu, sans-serif; color: var(--ink); background: #ece6de; }
+
+    .controls { background: #fff; border-bottom: 1px solid var(--line); padding: .9rem 1.5rem; position: sticky; top: 0; z-index: 5; }
+    .controls h1 { font: 600 1.2rem Georgia, serif; margin: 0 .5rem 0 0; display: inline; }
+    .controls .bar { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: end; margin-top: .6rem; }
+    .controls label { font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; display: block; }
+    .controls input[type=number] { width: 4.6rem; }
+    .controls input, .controls select { font: inherit; padding: .3rem .4rem; border: 1px solid var(--line); border-radius: 6px; }
+    .controls .checks { display: flex; gap: .9rem; flex-wrap: wrap; align-items: center; }
+    .controls .checks label { text-transform: none; letter-spacing: 0; font-size: .9rem; color: var(--ink); font-weight: 400; display: inline-flex; gap: .3rem; align-items: center; }
+    .controls button { font: inherit; padding: .45rem .9rem; border-radius: 7px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+    .controls button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+    .controls .hint { color: var(--muted); font-size: .82rem; margin: .5rem 0 0; }
+    details summary { cursor: pointer; color: var(--accent); font-size: .9rem; margin-top: .4rem; }
+
+    .sheets { padding: 1.5rem; display: flex; flex-direction: column; align-items: center; gap: 1.5rem; }
+    .sheet { position: relative; background: #fff; box-shadow: 0 2px 12px rgba(0,0,0,.15); overflow: hidden; }
+
+    .lbl {
+      position: absolute; overflow: hidden; display: flex; flex-direction: column;
+      padding: .11in .14in; color: #222;
+    }
+    .sheets .lbl { outline: 1px dashed #d8cfc4; }
+    .lbl.blank { outline-style: dotted; }
+    .lbl.border { border: 1px solid #555; border-radius: .06in; }
+    .lbl-header { font: italic 600 .85em Georgia, serif; color: var(--accent); text-align: center; margin-bottom: .2em; letter-spacing: .02em; }
+    .lbl-head { display: flex; justify-content: space-between; align-items: baseline; gap: .5em; border-bottom: 1px solid #bbb; padding-bottom: .2em; margin-bottom: .3em; }
+    .lbl-cat { font: 700 1.1em Georgia, serif; text-transform: uppercase; letter-spacing: .04em; }
+    .lbl-sub { font-weight: 400; font-style: italic; text-transform: none; letter-spacing: 0; font-size: .85em; color: #555; }
+    .lbl-age { font-weight: 700; white-space: nowrap; font-size: .9em; border: 1px solid #555; border-radius: 999px; padding: 0 .5em; }
+    .lbl-desc { font-family: Georgia, "Times New Roman", serif; line-height: 1.3; flex: 1; }
+    .lbl-code { font: .75em ui-monospace, monospace; color: #666; text-align: right; margin-top: .2em; }
+
+    .empty { padding: 4rem; text-align: center; color: var(--muted); }
+
+    @media print {
+      body { background: #fff; }
+      .controls { display: none; }
+      .sheets { padding: 0; gap: 0; display: block; }
+      .sheet { box-shadow: none; break-after: page; page-break-after: always; }
+      .sheet:last-child { break-after: auto; page-break-after: auto; }
+      .sheets .lbl { outline: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <h1>Book Labels</h1> <span id="count" class="hint"></span>
+    <div class="bar">
+      <div>
+        <label for="preset">Label stock</label>
+        <select id="preset">
+          <option value="avery5163">Avery 5163 / 8163 — 2″ × 4″, 10 per sheet</option>
+          <option value="avery5164">Avery 5164 / 8164 — 3⅓″ × 4″, 6 per sheet</option>
+          <option value="avery5168">Avery 5168 — 3½″ × 5″, 4 per sheet</option>
+          <option value="thermal4x6">Thermal roll — 4″ × 6″ (one per page)</option>
+          <option value="thermal4x3">Thermal roll — 4″ × 3″ (one per page)</option>
+          <option value="custom">Custom…</option>
+        </select>
+      </div>
+      <div><label>Font size (pt)</label><input type="number" id="font_pt" min="5" max="20" step="0.5"></div>
+      <div><label title="Skip label positions already used on a partly-used sheet">Skip first</label><input type="number" id="skip" min="0" step="1"></div>
+      <div class="checks">
+        <label><input type="checkbox" id="show_category"> Category</label>
+        <label><input type="checkbox" id="show_subgenre"> Subgenre</label>
+        <label><input type="checkbox" id="show_age"> Reader age</label>
+        <label><input type="checkbox" id="show_description"> Description</label>
+        <label><input type="checkbox" id="show_code"> Inventory code</label>
+        <label><input type="checkbox" id="show_border"> Print border</label>
+        <label title="Print as many labels as the quantity in stock"><input type="checkbox" id="one_per_copy"> One per copy</label>
+      </div>
+      <span style="flex:1"></span>
+      <button id="save-default">Save as default</button>
+      <button class="primary" onclick="window.print()">Print</button>
+    </div>
+    <details id="custom-box">
+      <summary>Size &amp; layout (inches)</summary>
+      <div class="bar">
+        <div>
+          <label for="page">Page</label>
+          <select id="page">
+            <option value="letter">Letter sheet (8½″ × 11″)</option>
+            <option value="label">One label per page (thermal)</option>
+          </select>
+        </div>
+        <div><label>Label width</label><input type="number" id="width_in" step="0.01" min="0.5"></div>
+        <div><label>Label height</label><input type="number" id="height_in" step="0.01" min="0.5"></div>
+        <div class="sheet-only"><label>Columns</label><input type="number" id="columns" step="1" min="1"></div>
+        <div class="sheet-only"><label>Rows</label><input type="number" id="rows" step="1" min="1"></div>
+        <div class="sheet-only"><label>Top margin</label><input type="number" id="margin_top_in" step="0.01" min="0"></div>
+        <div class="sheet-only"><label>Left margin</label><input type="number" id="margin_left_in" step="0.01" min="0"></div>
+        <div class="sheet-only"><label>Gap across</label><input type="number" id="gap_x_in" step="0.01" min="0"></div>
+        <div class="sheet-only"><label>Gap down</label><input type="number" id="gap_y_in" step="0.01" min="0"></div>
+        <div style="flex: 1 1 220px"><label>Header text (optional)</label><input type="text" id="header_text" placeholder="e.g. Blind Date with a Book" style="width:100%"></div>
+      </div>
+    </details>
+    <p class="hint">Before using real label sheets, print one page on plain paper and hold it up to a label sheet against a light. In the print dialog, set <b>Margins: None</b> and <b>Scale: 100%</b> (turn off “Fit to page”). Text shrinks automatically when a description is too long for a label.</p>
+  </div>
+
+  <div class="sheets" id="sheets"></div>
+
+<script>
+"use strict";
+const PRESETS = {
+  avery5163: { page: "letter", width_in: 4, height_in: 2, columns: 2, rows: 5, margin_top_in: 0.5, margin_left_in: 0.156, gap_x_in: 0.188, gap_y_in: 0 },
+  avery5164: { page: "letter", width_in: 4, height_in: 3.333, columns: 2, rows: 3, margin_top_in: 0.5, margin_left_in: 0.156, gap_x_in: 0.188, gap_y_in: 0 },
+  avery5168: { page: "letter", width_in: 3.5, height_in: 5, columns: 2, rows: 2, margin_top_in: 0.5, margin_left_in: 0.5, gap_x_in: 0.5, gap_y_in: 0 },
+  thermal4x6: { page: "label", width_in: 4, height_in: 6, columns: 1, rows: 1, margin_top_in: 0, margin_left_in: 0, gap_x_in: 0, gap_y_in: 0 },
+  thermal4x3: { page: "label", width_in: 4, height_in: 3, columns: 1, rows: 1, margin_top_in: 0, margin_left_in: 0, gap_x_in: 0, gap_y_in: 0 },
+};
+const NUM = ["width_in", "height_in", "columns", "rows", "margin_top_in", "margin_left_in", "gap_x_in", "gap_y_in", "font_pt", "skip"];
+const BOOL = ["show_category", "show_subgenre", "show_age", "show_description", "show_code", "show_border", "one_per_copy"];
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let S = {};
+let books = [];
+
+function readControls() {
+  S.preset = $("preset").value;
+  S.page = $("page").value;
+  S.header_text = $("header_text").value;
+  NUM.forEach((k) => (S[k] = parseFloat($(k).value) || 0));
+  BOOL.forEach((k) => (S[k] = $(k).checked));
+  S.columns = Math.max(1, Math.round(S.columns));
+  S.rows = Math.max(1, Math.round(S.rows));
+  S.skip = Math.max(0, Math.round(S.skip));
+}
+
+function writeControls() {
+  $("preset").value = S.preset in PRESETS ? S.preset : "custom";
+  $("page").value = S.page;
+  $("header_text").value = S.header_text || "";
+  NUM.forEach((k) => ($(k).value = S[k]));
+  BOOL.forEach((k) => ($(k).checked = !!S[k]));
+  document.querySelectorAll(".sheet-only").forEach((el) => (el.hidden = S.page === "label"));
+}
+
+function labelHtml(b) {
+  if (!b) return "";
+  const head = [];
+  if (S.show_category && b.category) {
+    head.push(`<span class="lbl-cat">${esc(b.category)}${S.show_subgenre && b.subgenre ? ` <span class="lbl-sub">· ${esc(b.subgenre)}</span>` : ""}</span>`);
+  } else if (S.show_subgenre && b.subgenre) {
+    head.push(`<span class="lbl-cat"><span class="lbl-sub">${esc(b.subgenre)}</span></span>`);
+  } else {
+    head.push("<span></span>");
+  }
+  if (S.show_age && b.age_group) head.push(`<span class="lbl-age">${esc(b.age_group)}</span>`);
+  return `
+    ${S.header_text ? `<div class="lbl-header">${esc(S.header_text)}</div>` : ""}
+    ${head.join("").replace("<span></span>", "") ? `<div class="lbl-head">${head.join("")}</div>` : ""}
+    ${S.show_description ? `<div class="lbl-desc">${esc(b.description || "")}</div>` : '<div style="flex:1"></div>'}
+    ${S.show_code ? `<div class="lbl-code">${esc(b.inventory_code)}</div>` : ""}`;
+}
+
+function render() {
+  const pageW = S.page === "label" ? S.width_in : 8.5;
+  const pageH = S.page === "label" ? S.height_in : 11;
+  const perPage = S.page === "label" ? 1 : S.columns * S.rows;
+  $("page-style").textContent = `@page { size: ${pageW}in ${pageH}in; margin: 0; }`;
+
+  const items = [];
+  const skip = S.page === "label" ? 0 : S.skip;
+  for (let i = 0; i < skip; i++) items.push(null);
+  for (const b of books) {
+    const n = S.one_per_copy ? Math.max(1, b.quantity) : 1;
+    for (let i = 0; i < n; i++) items.push(b);
+  }
+  const labelCount = items.length - skip;
+  $("count").textContent = books.length
+    ? `${labelCount} label${labelCount === 1 ? "" : "s"} for ${books.length} book${books.length === 1 ? "" : "s"}`
+    : "";
+
+  const container = $("sheets");
+  if (!books.length) {
+    container.innerHTML = '<div class="empty">No books selected. Go back to Inventory, tick some books and press “Print labels”.</div>';
+    return;
+  }
+  const pages = [];
+  for (let p = 0; p < items.length; p += perPage) pages.push(items.slice(p, p + perPage));
+
+  container.innerHTML = pages.map((page) => {
+    const labels = page.map((b, i) => {
+      const col = S.page === "label" ? 0 : i % S.columns;
+      const row = S.page === "label" ? 0 : Math.floor(i / S.columns);
+      const left = S.page === "label" ? 0 : S.margin_left_in + col * (S.width_in + S.gap_x_in);
+      const top = S.page === "label" ? 0 : S.margin_top_in + row * (S.height_in + S.gap_y_in);
+      return `<div class="lbl${b ? "" : " blank"}${b && S.show_border ? " border" : ""}" style="left:${left}in;top:${top}in;width:${S.width_in}in;height:${S.height_in}in;font-size:${S.font_pt}pt">${labelHtml(b)}</div>`;
+    }).join("");
+    return `<div class="sheet" style="width:${pageW}in;height:${pageH}in">${labels}</div>`;
+  }).join("");
+
+  fitText();
+}
+
+// Shrink the font on any label whose text overflows.
+function fitText() {
+  document.querySelectorAll(".lbl:not(.blank)").forEach((el) => {
+    let pt = S.font_pt;
+    while (el.scrollHeight > el.clientHeight + 1 && pt > 5.5) {
+      pt -= 0.5;
+      el.style.fontSize = pt + "pt";
+    }
+  });
+}
+
+function onChange(e) {
+  if (e.target.id === "preset") {
+    const p = PRESETS[e.target.value];
+    if (p) Object.assign(S, p);
+    else $("custom-box").open = true;
+    S.preset = e.target.value;
+    writeControls();
+  } else {
+    readControls();
+    if (["width_in", "height_in", "columns", "rows", "margin_top_in", "margin_left_in", "gap_x_in", "gap_y_in", "page"].includes(e.target.id)) {
+      S.preset = "custom";
+    }
+    writeControls();
+  }
+  render();
+}
+
+document.querySelector(".controls").addEventListener("input", onChange);
+
+$("save-default").addEventListener("click", async () => {
+  readControls();
+  const r = await fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label_settings: { ...S, skip: 0 } }),
+  });
+  $("save-default").textContent = r.ok ? "Saved ✓" : "Save failed";
+  setTimeout(() => ($("save-default").textContent = "Save as default"), 1800);
+});
+
+(async () => {
+  const params = new URLSearchParams(location.search);
+  const qs = new URLSearchParams();
+  if (params.get("ids")) qs.set("ids", params.get("ids"));
+  if (params.get("sort")) qs.set("sort", params.get("sort"));
+  const data = await (await fetch(`/api/labels?${qs}`)).json();
+  books = params.get("ids") ? data.books : [];
+  S = data.settings;
+  writeControls();
+  render();
+})();
+</script>
+</body>
+</html>
