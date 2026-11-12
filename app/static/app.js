@@ -71,7 +71,7 @@ function renderBookForm(container, b) {
   container.innerHTML = `
     <div class="grid3">
       <div class="span2"><label>Title</label><input type="text" name="title" value="${esc(b.title)}"></div>
-      <div><label>First published</label><input type="text" name="first_published" value="${esc(b.first_published)}"></div>
+      <div><label>Publication date</label><input type="text" name="published" value="${esc(b.published)}" placeholder="YYYY-MM-DD"></div>
       <div class="span2"><label>Author</label><input type="text" name="authors" value="${esc(b.authors)}"></div>
       <div><label>ISBN-13</label><input type="text" name="isbn13" value="${esc(b.isbn13)}"></div>
       <div><label>Category</label><select name="category">${opt(cats, b.category)}</select></div>
@@ -130,9 +130,14 @@ function resetAdd() {
 }
 
 async function handleLookupResult(res) {
+  const notes = [];
   if (res.read && res.kind === "candidates") {
-    notice($("#lookup-msg"), `From the photo I read: <b>${esc(res.read.title || "")}</b>${res.read.author ? " by " + esc(res.read.author) : ""}`, "ok");
+    notes.push(`From the photo I read: <b>${esc(res.read.title || "")}</b>${res.read.author ? " by " + esc(res.read.author) : ""}`);
   }
+  if (res.others) {
+    notes.push(`The photo shows ${res.others} more book${res.others === 1 ? "" : "s"} — use the <b>Bulk Add</b> tab to add several at once.`);
+  }
+  if (notes.length) notice($("#lookup-msg"), notes.join("<br>"), "ok");
   if (res.kind === "candidates") return showCandidates(res.candidates);
   return showBook(res.book, res.existing);
 }
@@ -163,7 +168,7 @@ function showCandidates(list) {
   box.innerHTML = list.map((c, i) => `
     <button class="cand" data-i="${i}">
       ${c.cover_url ? `<img src="${esc(c.cover_url)}" alt="" loading="lazy" onerror="this.outerHTML='<div class=nocover></div>'">` : '<div class="nocover"></div>'}
-      <span><b>${esc(c.title)}</b><small>${esc(c.authors || "Unknown author")}<br>${c.first_published ? "First published " + esc(c.first_published) : ""}${c.edition_count ? ` · ${c.edition_count} editions` : ""}</small></span>
+      <span><b>${esc(c.title)}</b><small>${esc(c.authors || "Unknown author")}<br>${c.original_year ? esc(c.original_year) : ""}${c.edition_count ? ` · ${c.edition_count} editions` : ""}</small></span>
     </button>`).join("");
   card.hidden = false;
   $$(".cand", box).forEach((el) =>
@@ -183,35 +188,55 @@ function showCandidates(list) {
   );
 }
 
-function showExisting(existing) {
+let existingId = null; // set when the looked-up book is already in inventory
+
+// The book is already in inventory: a copy has been added; offer undo / another.
+function showExisting(book, added) {
   const box = $("#existing-msg");
-  if (!existing) { box.hidden = true; return; }
+  if (!book) { box.hidden = true; return; }
   box.hidden = false;
-  box.innerHTML = `<b>Already in inventory</b> as <span class="code">${esc(existing.inventory_code)}</span> — quantity ${existing.quantity}.
-    <button class="small primary" id="add-copy">Add 1 more copy</button>
-    <button class="small" id="view-existing">Open it</button>`;
-  $("#add-copy").onclick = async () => {
-    const b = await api(`/api/books/${existing.id}/quantity`, { json: { change: 1, note: "added copy" } });
-    toast(`${b.inventory_code}: quantity is now ${b.quantity}`);
-    showExisting(b);
+  box.className = "notice ok";
+  box.innerHTML = `<b>Already in inventory</b> as <span class="code">${esc(book.inventory_code)}</span>.
+    ${added ? `Added ${added} cop${added === 1 ? "y" : "ies"} —` : ""} now <b>${book.quantity}</b> in stock.
+    ${added ? '<button class="small" id="undo-copy">Undo</button>' : ""}
+    <button class="small" id="add-copy">+1 more</button>`;
+  const change = async (n, note) => {
+    const b = await api(`/api/books/${book.id}/quantity`, { json: { change: n, note } });
+    showExisting(b, added + n);
   };
-  $("#view-existing").onclick = () => openEditor(existing.id);
+  $("#add-copy").onclick = () => change(1, "added copy");
+  if (added) $("#undo-copy").onclick = () => change(-added, "undo");
+}
+
+function setSaveMode(isExisting) {
+  $("#save-btn").textContent = isExisting ? "Save changes" : "Save to inventory";
+  $("#save-qty").hidden = $("#save-qty-label").hidden = isExisting;
 }
 
 async function showBook(book, existing) {
   current = book;
+  existingId = existing ? existing.id : null;
   $("#result-card").hidden = false;
-  $("#result-cover").innerHTML = coverHtml(book.cover_url, book.title);
-  renderBookForm($("#result-form"), book);
+  $("#result-cover").innerHTML = coverHtml(book.cover_url || existing?.cover_url, book.title);
   notice($("#ai-warnings"), "", "warn");
   $("#save-qty").value = 1;
-  showExisting(existing);
+  setSaveMode(!!existing);
   $("#result-card").scrollIntoView({ behavior: "smooth", block: "start" });
   if (existing) {
-    // Re-use what was already written instead of paying for a new description.
+    // Entering a book we already have counts as another copy.
     renderBookForm($("#result-form"), { ...book, ...existing });
+    try {
+      const b = await api(`/api/books/${existing.id}/quantity`, { json: { change: 1, note: "entered again" } });
+      showExisting(b, 1);
+      toast(`${b.inventory_code}: now ${b.quantity} in stock`);
+    } catch (err) {
+      showExisting(existing, 0);
+      notice($("#ai-warnings"), esc(err.message), "err");
+    }
     return;
   }
+  showExisting(null);
+  renderBookForm($("#result-form"), book);
   await generate();
 }
 
@@ -227,11 +252,8 @@ async function generate({ nudge = null, previous = null } = {}) {
     sel("category", out.category);
     sel("age_group", out.age_group);
     $("[name=subgenre]", form).value = out.subgenre || "";
-    if (!$("[name=first_published]", form).value && out.ai_first_published) {
-      $("[name=first_published]", form).value = out.ai_first_published;
-    }
     setDescription(form, out.description, false);
-    notice($("#ai-warnings"), out.warnings.map(esc).join("<br>"), "warn");
+    showWarnings($("#ai-warnings"), out, form);
   } catch (err) {
     setDescription(form, null, false);
     notice($("#ai-warnings"), esc(err.message), "err");
@@ -240,33 +262,46 @@ async function generate({ nudge = null, previous = null } = {}) {
   }
 }
 
+// Show AI warnings (e.g. a teaser that may give the book away).
+function showWarnings(box, out) {
+  notice(box, out.warnings.map(esc).join("<br>"), "warn");
+}
+
 $("#regen-btn").addEventListener("click", () => {
   const prev = $("#result-form textarea[name=description]").value;
   generate({ nudge: $("#nudge").value.trim() || null, previous: prev || null });
 });
 
+function finishAdd() {
+  resetAdd();
+  existingId = null;
+  $("#q").value = "";
+  $("#author").value = "";
+  $("#q").focus();
+}
+
 $("#save-btn").addEventListener("click", async () => {
   const data = readBookForm($("#result-form"));
-  const payload = {
-    ...data,
-    work_key: current?.work_key || null,
-    cover_url: current?.cover_url || null,
-    source_summary: current?.source_summary || null,
-    quantity: Math.max(1, parseInt($("#save-qty").value, 10) || 1),
-  };
-  if (!payload.title) return notice($("#ai-warnings"), "A title is required.", "err");
+  if (!data.title) return notice($("#ai-warnings"), "A title is required.", "err");
   const btn = $("#save-btn");
   busy(btn, true, "Saving…");
   try {
-    const b = await api("/api/books", { json: payload });
-    toast(`Saved as ${b.inventory_code}`);
-    resetAdd();
-    $("#q").value = "";
-    $("#author").value = "";
-    $("#q").focus();
+    if (existingId) {
+      const b = await api(`/api/books/${existingId}`, { method: "PUT", json: data });
+      toast(`${b.inventory_code} updated`);
+    } else {
+      const b = await api("/api/books", { json: {
+        ...data,
+        work_key: current?.work_key || null,
+        cover_url: current?.cover_url || null,
+        source_summary: current?.source_summary || null,
+        quantity: Math.max(1, parseInt($("#save-qty").value, 10) || 1),
+      } });
+      toast(b.merged ? `Already in inventory — ${b.inventory_code} now has ${b.quantity}` : `Saved as ${b.inventory_code}`);
+    }
+    finishAdd();
   } catch (err) {
-    if (err.status === 409 && err.detail?.existing) showExisting(err.detail.existing);
-    else notice($("#ai-warnings"), esc(err.message), "err");
+    notice($("#ai-warnings"), esc(err.message), "err");
   } finally {
     busy(btn, false);
   }
@@ -345,6 +380,207 @@ function stopScan() {
 }
 $("#scan-stop").addEventListener("click", stopScan);
 
+// ---------- bulk add ----------
+const bulk = { items: [], seq: 0, paused: false, running: 0, MAX: 3 };
+
+function bulkMsg(html, kind = "err") { notice($("#bulk-msg"), html, kind); }
+
+function queueItems(list, source) {
+  for (const it of list) {
+    bulk.items.push({ id: ++bulk.seq, source, status: "waiting", quantity: 1, ...it });
+  }
+  $("#bulk-queue-card").hidden = false;
+  renderBulk();
+  pumpBulk();
+}
+
+async function parseAndQueue(text, source) {
+  try {
+    const { items } = await api("/api/bulk/parse", { json: { text } });
+    queueItems(items, source);
+    bulkMsg(`Added ${items.length} entr${items.length === 1 ? "y" : "ies"} to the queue.`, "ok");
+    return true;
+  } catch (err) {
+    bulkMsg(esc(err.message));
+    return false;
+  }
+}
+
+$("#bulk-add-text").addEventListener("click", async () => {
+  const text = $("#bulk-text").value;
+  if (!text.trim()) return bulkMsg("Paste some titles or ISBNs first.", "warn");
+  if (await parseAndQueue(text, "list")) $("#bulk-text").value = "";
+});
+$("#bulk-file-btn").addEventListener("click", () => $("#bulk-file").click());
+$("#bulk-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (file) await parseAndQueue(await file.text(), file.name);
+});
+
+// photos: each photo becomes a "photo" job that expands into one row per book found
+function queuePhotos(files) {
+  const imgs = [...files].filter((f) => f.type.startsWith("image/"));
+  if (!imgs.length) return bulkMsg("Those files aren't images.", "warn");
+  queueItems(imgs.map((f) => ({ kind: "photo", file: f, query: f.name })), "photo");
+  bulkMsg(`Reading ${imgs.length} photo${imgs.length === 1 ? "" : "s"}…`, "ok");
+}
+$("#bulk-photo-btn").addEventListener("click", () => $("#bulk-photos").click());
+$("#bulk-photos").addEventListener("change", (e) => { queuePhotos(e.target.files); e.target.value = ""; });
+const drop = $("#bulk-drop");
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); queuePhotos(e.dataTransfer.files); });
+
+$("#bulk-pause").addEventListener("click", () => {
+  bulk.paused = !bulk.paused;
+  $("#bulk-pause").textContent = bulk.paused ? "Resume" : "Pause";
+  if (!bulk.paused) pumpBulk();
+  renderBulk();
+});
+$("#bulk-clear").addEventListener("click", () => {
+  bulk.items = bulk.items.filter((i) => !["added", "incremented", "undone", "skipped"].includes(i.status));
+  renderBulk();
+});
+
+function pumpBulk() {
+  while (!bulk.paused && bulk.running < bulk.MAX) {
+    const item = bulk.items.find((i) => i.status === "waiting");
+    if (!item) break;
+    bulk.running++;
+    item.status = "working";
+    renderBulk();
+    (item.kind === "photo" ? runPhoto(item) : runItem(item)).finally(() => {
+      bulk.running--;
+      renderBulk();
+      pumpBulk();
+    });
+  }
+}
+
+async function runPhoto(item) {
+  try {
+    const blob = await shrinkImage(item.file, 1600);
+    const fd = new FormData();
+    fd.append("file", blob, "photo.jpg");
+    const { books } = await api("/api/photo/read", { method: "POST", body: fd });
+    if (!books.length) {
+      Object.assign(item, { status: "not_found", message: "No readable book in this photo." });
+      return;
+    }
+    const rows = books.map((b) => ({
+      id: ++bulk.seq, source: "photo", status: "waiting", quantity: 1,
+      query: b.isbn || b.title, author: b.isbn ? null : b.author,
+      label: `${b.title || b.isbn}${b.author ? " — " + b.author : ""}`, photo: item.file.name,
+    }));
+    bulk.items.splice(bulk.items.indexOf(item), 1, ...rows);
+  } catch (err) {
+    Object.assign(item, { status: "error", message: err.message });
+  }
+}
+
+async function runItem(item) {
+  try {
+    const res = await api("/api/bulk/item", { json: {
+      query: item.query, author: item.author || null, quantity: item.quantity,
+      work_key: item.work_key || null, isbn13: item.isbn13 || null,
+    } });
+    Object.assign(item, res, { status: res.status });
+  } catch (err) {
+    Object.assign(item, { status: "error", message: err.message });
+  }
+}
+
+function bulkStatusHtml(it) {
+  const b = it.book;
+  switch (it.status) {
+    case "waiting": return `<span class="st dim">${bulk.paused ? "Paused" : "Waiting"}</span>`;
+    case "working": return `<span class="st dim"><span class="spinner"></span> ${it.kind === "photo" ? "Reading photo…" : "Looking up & writing…"}</span>`;
+    case "added": {
+      const warn = (it.warnings || []).map((w) => `<small>${esc(w)}</small>`).join("");
+      return `<span class="st ok">Added as ${esc(b.inventory_code)}${warn}</span>`;
+    }
+    case "incremented":
+      return `<span class="st inc">Already had it — +${it.change} → ${b.quantity} in stock</span>`;
+    case "choose":
+      return `<span class="st need">Which book is it?</span>
+        <select data-role="pick">${it.candidates.map((c, i) =>
+          `<option value="${i}">${esc(c.title)} — ${esc(c.authors || "?")}${c.original_year ? " (" + esc(c.original_year) + ")" : ""}</option>`).join("")}</select>
+        <span><button class="small primary" data-act="pick">Add this one</button> <button class="small" data-act="skip">Skip</button></span>`;
+    case "not_found":
+    case "error":
+      return `<span class="st bad">${esc(it.message || "Not found")}</span>
+        ${it.kind === "photo" ? "" : `<input type="text" data-role="query" value="${esc(it.query)}">`}
+        <span><button class="small" data-act="retry">Retry</button> <button class="small" data-act="skip">Skip</button></span>`;
+    case "undone": return '<span class="st dim">Undone</span>';
+    case "skipped": return '<span class="st dim">Skipped</span>';
+  }
+  return "";
+}
+
+function renderBulk() {
+  const body = $("#bulk-body");
+  body.innerHTML = bulk.items.map((it, n) => {
+    const b = it.book;
+    const entry = it.kind === "photo"
+      ? `Photo: ${esc(it.file.name)}`
+      : `${esc(it.label || it.query)}${!it.label && it.author ? " — " + esc(it.author) : ""}${it.quantity > 1 ? ` ×${it.quantity}` : ""}${it.photo ? `<br><small>from ${esc(it.photo)}</small>` : ""}`;
+    const bookCell = b && ["added", "incremented"].includes(it.status)
+      ? `<b>${esc(b.title)}</b><small>${esc(b.authors || "")}${b.published ? " · " + esc(b.published) : ""}</small>
+         <small>${esc(b.category || "")}${b.age_group ? " · " + esc(b.age_group) : ""}</small>` : "";
+    const actions = ["added", "incremented"].includes(it.status)
+      ? `<button class="small" data-act="open">Open</button> <button class="small" data-act="undo">Undo</button>` : "";
+    return `<tr data-id="${it.id}">
+      <td>${n + 1}</td>
+      <td class="entry">${entry}</td>
+      <td>${b?.cover_url && bookCell ? `<img src="${esc(b.cover_url)}" alt="" loading="lazy" onerror="this.remove()">` : ""}</td>
+      <td class="title">${bookCell}</td>
+      <td><div class="status">${bulkStatusHtml(it)}</div></td>
+      <td>${actions}</td>
+    </tr>`;
+  }).join("");
+  const count = (st) => bulk.items.filter((i) => i.status === st).length;
+  const parts = [
+    [count("added"), "added"], [count("incremented"), "already in stock"],
+    [count("waiting") + count("working"), "to go"], [count("choose"), "need a choice"],
+    [count("not_found") + count("error"), "problem"],
+  ].filter(([n]) => n).map(([n, t]) => `${n} ${t === "problem" && n > 1 ? "problems" : t}`);
+  $("#bulk-summary").textContent = parts.join(" · ");
+}
+
+$("#bulk-body").addEventListener("click", async (e) => {
+  const act = e.target.dataset.act;
+  if (!act) return;
+  const tr = e.target.closest("tr");
+  const it = bulk.items.find((i) => i.id === +tr.dataset.id);
+  if (!it) return;
+  try {
+    if (act === "open") return openEditor(it.book.id);
+    if (act === "undo") {
+      if (it.status === "added") await api(`/api/books/${it.book.id}`, { method: "DELETE" });
+      else await api(`/api/books/${it.book.id}/quantity`, { json: { change: -it.change, note: "undo bulk entry" } });
+      it.status = "undone";
+    } else if (act === "pick") {
+      const c = it.candidates[+$("select[data-role=pick]", tr).value];
+      Object.assign(it, { work_key: c.work_key, isbn13: c.isbn13, query: c.title, author: c.authors, label: `${c.title} — ${c.authors || "?"}`, status: "waiting" });
+    } else if (act === "retry") {
+      const q = $("input[data-role=query]", tr);
+      if (q) Object.assign(it, { query: q.value.trim(), label: null, work_key: null, isbn13: null });
+      it.status = "waiting";
+    } else if (act === "skip") {
+      it.status = "skipped";
+    }
+  } catch (err) {
+    toast(err.message);
+  }
+  renderBulk();
+  pumpBulk();
+});
+
+window.addEventListener("beforeunload", (e) => {
+  if (bulk.items.some((i) => ["waiting", "working"].includes(i.status))) e.preventDefault();
+});
+
 // ---------- inventory ----------
 const selected = new Set();
 let invRows = [];
@@ -362,7 +598,7 @@ async function loadInventory() {
         <td><input type="checkbox" class="pick" ${selected.has(b.id) ? "checked" : ""}></td>
         <td class="code">${esc(b.inventory_code)}</td>
         <td>${b.cover_url ? `<img src="${esc(b.cover_url)}" alt="" loading="lazy" onerror="this.remove()">` : ""}</td>
-        <td class="title"><b>${esc(b.title)}</b><small>${esc(b.authors || "")}${b.first_published ? " · " + esc(b.first_published) : ""}</small></td>
+        <td class="title"><b>${esc(b.title)}</b><small>${esc(b.authors || "")}${b.published ? " · " + esc(b.published) : ""}</small></td>
         <td>${esc(b.category || "")}${b.subgenre ? `<br><small>${esc(b.subgenre)}</small>` : ""}</td>
         <td>${b.age_group ? `<span class="badge">${esc(b.age_group)}</span>` : ""}</td>
         <td><span class="qty"><button class="small" data-q="-1" title="Remove a copy">−</button><span>${b.quantity}</span><button class="small" data-q="1" title="Add a copy">+</button></span></td>
@@ -376,6 +612,7 @@ async function loadInventory() {
 function updateSelected() {
   const visible = invRows.filter((b) => selected.has(b.id)).length;
   $("#inv-selected").textContent = selected.size ? `${selected.size} selected` : "";
+  $("#delete-btn").disabled = selected.size === 0;
   $("#inv-all").checked = invRows.length > 0 && visible === invRows.length;
 }
 
@@ -413,6 +650,46 @@ $("#export-btn").addEventListener("click", () => {
   if (!ids.length) return toast("Nothing to export");
   window.location = `/api/export.csv?sort=${$("#inv-sort").value}&ids=${ids.join(",")}`;
 });
+// ----- bulk delete (checked rows only, always confirmed) -----
+let pendingDelete = [];
+$("#delete-btn").addEventListener("click", async () => {
+  if (!selected.size) return;
+  try {
+    pendingDelete = await api(`/api/books?ids=${[...selected].join(",")}`);
+  } catch (err) {
+    return toast(err.message);
+  }
+  if (!pendingDelete.length) { selected.clear(); updateSelected(); return toast("Those books are already gone"); }
+  const n = pendingDelete.length;
+  const copies = pendingDelete.reduce((t, b) => t + b.quantity, 0);
+  $("#del-title").textContent = `Delete ${n} book${n === 1 ? "" : "s"}?`;
+  $("#del-list").innerHTML = pendingDelete.map((b) =>
+    `<li><b>${esc(b.title)}</b> <span class="code">${esc(b.inventory_code)}</span> — ${b.quantity} in stock</li>`).join("");
+  $("#del-totals").textContent = `${n} book${n === 1 ? "" : "s"}, ${copies} cop${copies === 1 ? "y" : "ies"} in stock.`;
+  $("#del-confirm").textContent = `Delete ${n} book${n === 1 ? "" : "s"}`;
+  $("#del-dlg").showModal();
+  $("#del-cancel").focus(); // safe default if Enter is pressed
+});
+$("#del-cancel").addEventListener("click", () => $("#del-dlg").close());
+$("#del-export").addEventListener("click", () => {
+  window.location = `/api/export.csv?ids=${pendingDelete.map((b) => b.id).join(",")}`;
+});
+$("#del-confirm").addEventListener("click", async () => {
+  const btn = $("#del-confirm");
+  busy(btn, true, "Deleting…");
+  try {
+    const { deleted } = await api("/api/books/delete", { json: { ids: pendingDelete.map((b) => b.id) } });
+    pendingDelete.forEach((b) => selected.delete(b.id));
+    $("#del-dlg").close();
+    toast(`Deleted ${deleted} book${deleted === 1 ? "" : "s"}`);
+    loadInventory();
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    busy(btn, false);
+  }
+});
+
 $("#labels-btn").addEventListener("click", () => {
   const ids = targetIds();
   if (!ids.length) return toast("Nothing to print");
@@ -449,7 +726,7 @@ $("#edit-regen").addEventListener("click", async () => {
   try {
     const out = await api("/api/generate", { json: { book: { ...editing, ...readBookForm(form) }, previous: prev || null } });
     setDescription(form, out.description, false);
-    notice($("#edit-warnings"), out.warnings.map(esc).join("<br>"), "warn");
+    showWarnings($("#edit-warnings"), out, form);
   } catch (err) {
     setDescription(form, null, false);
     notice($("#edit-warnings"), esc(err.message), "err");

@@ -2,6 +2,7 @@
 
 import os
 import re
+from datetime import datetime
 
 import httpx
 
@@ -46,7 +47,7 @@ async def search(title: str, author: str | None = None, limit: int = 8) -> list[
             "work_key": d.get("key"),
             "title": d.get("title"),
             "authors": ", ".join(d.get("author_name", [])[:3]),
-            "first_published": str(d["first_publish_year"]) if d.get("first_publish_year") else None,
+            "original_year": str(d["first_publish_year"]) if d.get("first_publish_year") else None,
             "cover_url": _cover(d.get("cover_i")),
             "edition_count": d.get("edition_count"),
             "isbn13": _pick_isbn13(d.get("isbn")),
@@ -93,6 +94,25 @@ async def _google(c: httpx.AsyncClient, isbn13: str | None, title: str | None, a
         return {}
 
 
+_DATE_FORMATS = [("%Y-%m-%d", 3), ("%B %d, %Y", 3), ("%b %d, %Y", 3), ("%d %B %Y", 3), ("%d %b %Y", 3),
+                 ("%Y-%m", 2), ("%B %Y", 2), ("%b %Y", 2), ("%Y", 1)]
+
+
+def normalize_date(raw: str | None) -> str | None:
+    """'October 1, 1991' -> '1991-10-01', 'Aug 2012' -> '2012-08', '2017' -> '2017'."""
+    if not raw:
+        return None
+    raw = re.sub(r"\s+", " ", str(raw).replace("Sept ", "Sep ")).strip().rstrip(".")
+    for fmt, parts in _DATE_FORMATS:
+        try:
+            d = datetime.strptime(raw, fmt)
+        except ValueError:
+            continue
+        return d.strftime(["%Y", "%Y-%m", "%Y-%m-%d"][parts - 1])
+    m = re.search(r"(?<!\d)(1[5-9]\d\d|20\d\d)(?!\d)", raw)  # e.g. "c1991", "[2004?]"
+    return m.group(1) if m else None
+
+
 def _text(desc) -> str | None:
     if isinstance(desc, dict):
         desc = desc.get("value")
@@ -137,14 +157,22 @@ async def identify(isbn13: str | None = None, work_key: str | None = None,
             author or ", ".join((doc or {}).get("author_name", [])[:1]) or None,
         )
 
+        # Publication date of this specific edition (what's printed in the copy).
+        edition_isbn = isbn13 or g.get("isbn13")
+        edition = {}
+        if edition_isbn:
+            r = await c.get(f"{OL}/isbn/{edition_isbn}.json")
+            if r.status_code == 200:
+                edition = r.json()
+
     if not doc and not g:
         return None
     doc = doc or {}
 
-    first_year = doc.get("first_publish_year")
-    first_published = str(first_year) if first_year else None
-    if not first_published and g.get("published_date"):
-        first_published = g["published_date"][:4]
+    original_year = str(doc["first_publish_year"]) if doc.get("first_publish_year") else None
+    published = (normalize_date(edition.get("publish_date"))
+                 or normalize_date(g.get("published_date"))
+                 or original_year)
 
     ol_desc = _text(work.get("description"))
     summary = ol_desc if ol_desc and len(ol_desc) >= len(g.get("description") or "") else g.get("description")
@@ -154,7 +182,7 @@ async def identify(isbn13: str | None = None, work_key: str | None = None,
         "work_key": doc.get("key"),
         "title": doc.get("title") or g.get("title"),
         "authors": ", ".join(doc.get("author_name", [])[:3]) or g.get("authors"),
-        "first_published": first_published,
+        "published": published,
         "page_count": doc.get("number_of_pages_median") or g.get("page_count"),
         "cover_url": _cover(doc.get("cover_i")) or g.get("cover_url"),
         "source_summary": summary,
@@ -163,5 +191,54 @@ async def identify(isbn13: str | None = None, work_key: str | None = None,
         "characters": [re.sub(r"\s*\(.*?\)\s*", "", p) for p in (doc.get("person") or [])[:20]],
         "places": (doc.get("place") or [])[:10],
         "maturity": g.get("maturity"),
-        "edition_published": g.get("published_date"),
+        "original_year": original_year,  # context for the AI only; not stored
     }
+
+
+# ---------- confident matching (for bulk entry) ----------
+
+def _norm_title(s: str | None) -> str:
+    s = (s or "").lower()
+    s = re.split(r"[:(]", s)[0]                      # drop subtitle / series note
+    s = re.sub(r"^\s*(the|a|an)\s+", "", s)
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+def _norm(s: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def _author_matches(wanted: str, authors: str | None) -> bool:
+    last = _norm((wanted or "").split()[-1]) if wanted and wanted.split() else ""
+    return bool(last) and last in _norm(authors)
+
+
+def best_match(query: str, author: str | None, candidates: list[dict]) -> dict | None:
+    """Return the candidate we're confident about, or None if a person should choose.
+
+    Confident = the title matches exactly (ignoring case, punctuation, leading article
+    and subtitle) and either the author matches, or the match is clearly the best-known
+    book with that title.
+    """
+    q = _norm_title(query)
+    exact = []
+    for c in candidates:
+        t = _norm_title(c.get("title"))
+        if t == q:
+            exact.append(c)
+        elif not author and t and q.startswith(t):
+            # "Gone Girl Gillian Flynn" / "Gone Girl, Gillian Flynn" typed on one line
+            rest = q[len(t):]
+            if any(rest == _norm(a) for a in (c.get("authors") or "").split(",")):
+                return c
+    if author:
+        exact = [c for c in exact if _author_matches(author, c.get("authors"))]
+        return exact[0] if exact else None
+    if len(exact) == 1:
+        return exact[0]
+    if len(exact) > 1:
+        ranked = sorted(exact, key=lambda c: c.get("edition_count") or 0, reverse=True)
+        top, nxt = ranked[0].get("edition_count") or 0, ranked[1].get("edition_count") or 0
+        if top >= 5 and top >= 3 * max(nxt, 1):
+            return ranked[0]
+    return None

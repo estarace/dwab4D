@@ -11,7 +11,7 @@ from pathlib import Path
 DB_PATH = Path(os.environ.get("DWAB_DB", Path(__file__).resolve().parent.parent / "data" / "dwab.db"))
 
 BOOK_FIELDS = [
-    "isbn13", "work_key", "title", "authors", "first_published", "page_count",
+    "isbn13", "work_key", "title", "authors", "published", "page_count",
     "cover_url", "category", "subgenre", "age_group", "description",
     "source_summary", "notes",
 ]
@@ -33,12 +33,11 @@ DEFAULT_LABEL_SETTINGS = {
     "columns": 2, "rows": 5,
     "margin_top_in": 0.5, "margin_left_in": 0.156,
     "gap_x_in": 0.188, "gap_y_in": 0.0,
-    "font_pt": 9,
+    "font_pt": 14,  # maximum; text is fitted to each label up to this size
     "show_category": True, "show_subgenre": True, "show_age": True,
     "show_description": True, "show_code": True,
     "show_border": False,
     "header_text": "",
-    "one_per_copy": False,
     "skip": 0,  # blank positions to skip at the start of a partly used sheet
 }
 
@@ -76,7 +75,7 @@ def init() -> None:
                 work_key TEXT,
                 title TEXT NOT NULL,
                 authors TEXT,
-                first_published TEXT,
+                published TEXT,
                 page_count INTEGER,
                 cover_url TEXT,
                 category TEXT,
@@ -104,6 +103,10 @@ def init() -> None:
             );
             """
         )
+        # migration: "first published" became "publication date" (2026-11)
+        cols = {r["name"] for r in c.execute("PRAGMA table_info(books)")}
+        if "first_published" in cols and "published" not in cols:
+            c.execute("ALTER TABLE books RENAME COLUMN first_published TO published")
 
 
 # ---------- settings ----------
@@ -214,9 +217,39 @@ def adjust_quantity(book_id: int, change: int, note: str | None = None) -> dict 
     return get_book(book_id)
 
 
+def adjust_many(changes: list[tuple[int, int]], note: str | None = None) -> list[dict]:
+    """Apply several quantity changes in one transaction (floors at zero)."""
+    ts = now()
+    ids = []
+    with session() as c:
+        for book_id, change in changes:
+            row = c.execute("SELECT quantity FROM books WHERE id = ?", (book_id,)).fetchone()
+            if row is None or not change:
+                continue
+            new_qty = max(0, row["quantity"] + change)
+            actual = new_qty - row["quantity"]
+            if actual:
+                c.execute("UPDATE books SET quantity = ?, updated_at = ? WHERE id = ?", (new_qty, ts, book_id))
+                c.execute(
+                    "INSERT INTO stock_events(book_id, change, note, created_at) VALUES (?, ?, ?, ?)",
+                    (book_id, actual, note, ts),
+                )
+            ids.append(book_id)
+    return [get_book(i) for i in ids]
+
+
 def delete_book(book_id: int) -> None:
     with session() as c:
         c.execute("DELETE FROM books WHERE id = ?", (book_id,))
+
+
+def delete_books(ids: list[int]) -> int:
+    """Delete several books (and their stock history) in one transaction."""
+    if not ids:
+        return 0
+    with session() as c:
+        cur = c.execute(f"DELETE FROM books WHERE id IN ({', '.join('?' for _ in ids)})", ids)
+        return cur.rowcount
 
 
 SORTS = {

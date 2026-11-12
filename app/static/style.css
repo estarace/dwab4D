@@ -139,3 +139,34 @@ dialog .dlg-body { padding: 1.5rem; max-height: 85vh; overflow: auto; }
   opacity: 0; transition: opacity .2s; pointer-events: none;
 }
 #toast.show { opacity: 1; }
+
+/* bulk */
+.bulk-grid { display: grid; grid-template-columns: 3fr 2fr; gap: 1.5rem; }
+.dropzone {
+  border: 2px dashed var(--line); border-radius: var(--radius); padding: 1.5rem; text-align: center;
+  min-height: 12rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: .3rem;
+}
+.dropzone p { margin: 0; }
+.dropzone.over { border-color: var(--accent); background: var(--accent-soft); }
+table.bulk td { font-size: .92rem; }
+table.bulk td.entry { max-width: 240px; color: var(--muted); }
+table.bulk .status { display: flex; flex-direction: column; gap: .3rem; align-items: flex-start; }
+table.bulk .status select { max-width: 320px; font-size: .85rem; padding: .25rem; }
+table.bulk .status input { font-size: .85rem; padding: .25rem .4rem; width: 220px; }
+.st { font-weight: 600; font-size: .85rem; }
+.st.ok { color: var(--ok-ink); }
+.st.inc { color: #1f4f8a; }
+.st.need { color: var(--warn-ink); }
+.st.bad { color: var(--err-ink); }
+.st.dim { color: var(--muted); font-weight: 400; }
+.st small { font-weight: 400; color: var(--warn-ink); display: block; }
+
+/* bulk delete */
+button.danger { color: var(--err-ink); }
+button.danger:disabled { color: var(--muted); }
+button.danger-fill { background: var(--err-ink); border-color: var(--err-ink); color: #fff; }
+#del-dlg { width: min(600px, 94vw); }
+.del-list-wrap { max-height: 40vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; padding: .4rem .2rem; }
+#del-list { margin: 0; padding-left: 1.6rem; }
+#del-list li { margin: .15rem 0; }
+#del-list .code { color: var(--muted); }

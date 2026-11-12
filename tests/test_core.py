@@ -68,16 +68,18 @@ def _book(**kw):
             "description": "An empire is dying. One man has done the math.", **kw}
 
 
-def test_create_assigns_code_and_detects_duplicates():
+def test_create_assigns_code_and_merges_duplicates():
     r = client.post("/api/books", json=_book(quantity=2))
     assert r.status_code == 200
     b = r.json()
     assert b["inventory_code"] == "DWB-0001"
     assert b["quantity"] == 2
 
-    dup = client.post("/api/books", json=_book(isbn13=None, title="foundation"))
-    assert dup.status_code == 409
-    assert dup.json()["detail"]["existing"]["id"] == b["id"]
+    dup = client.post("/api/books", json=_book(isbn13=None, title="foundation", quantity=1))
+    assert dup.status_code == 200
+    assert dup.json()["merged"] is True
+    assert dup.json()["id"] == b["id"] and dup.json()["quantity"] == 3
+    assert len(client.get("/api/books").json()) == 1
 
 
 def test_quantity_history_and_floor_at_zero():
@@ -124,12 +126,12 @@ def test_enrich_retries_when_teaser_leaks(monkeypatch):
     import asyncio
     replies = [
         {"category": "Fantasy", "subgenre": "Historical Fantasy", "age_group": "Adult",
-         "description": "Celia was raised for a duel she never chose.", "first_published_year": 2011,
+         "description": "Celia was raised for a duel she never chose.",
          "giveaway_terms": ["Le Cirque des Rêves"]},
         {"category": "Fantasy", "subgenre": "Historical Fantasy", "age_group": "Adult",
          "description": "Two young illusionists are bound to a contest they never chose. "
                         "The gates open only at dusk. Love may be the one trick neither can afford.",
-         "first_published_year": 2011, "giveaway_terms": ["Le Cirque des Rêves"]},
+         "giveaway_terms": ["Le Cirque des Rêves"]},
     ]
     prompts = []
 
@@ -138,7 +140,7 @@ def test_enrich_retries_when_teaser_leaks(monkeypatch):
         return replies[len(prompts) - 1]
 
     monkeypatch.setattr(ai, "_call", fake_call)
-    out = asyncio.run(ai.enrich({**BOOK, "first_published": "2011"}, ["Fantasy"], db.AGE_GROUPS))
+    out = asyncio.run(ai.enrich({**BOOK, "published": "2011"}, ["Fantasy"], db.AGE_GROUPS))
     assert len(prompts) == 2
     assert "Celia" in prompts[1]          # retry explains what leaked
     assert out["warnings"] == []

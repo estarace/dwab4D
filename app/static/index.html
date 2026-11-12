@@ -11,6 +11,7 @@
     <h1>Date <span>with a</span> Book</h1>
     <nav class="tabs">
       <button data-view="add" class="active">Add a Book</button>
+      <button data-view="bulk">Bulk Add</button>
       <button data-view="inventory">Inventory</button>
       <button data-view="settings">Settings</button>
     </nav>
@@ -58,7 +59,7 @@
             <div class="notice warn" id="ai-warnings"></div>
             <div class="actions">
               <button class="primary" id="save-btn">Save to inventory</button>
-              <span class="hint">Qty</span>
+              <span class="hint" id="save-qty-label">Qty</span>
               <input type="number" id="save-qty" value="1" min="1" style="width:4.5rem">
               <span style="flex:1"></span>
               <input type="text" id="nudge" placeholder="Optional: “spookier”, “more romantic”…" style="width:240px">
@@ -66,6 +67,50 @@
             </div>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- BULK -->
+    <section class="view" id="view-bulk" hidden>
+      <div class="card">
+        <h2>Bulk add</h2>
+        <p class="hint">Books already in inventory just get their quantity increased. New books are looked up, described by the AI (a few cents each) and saved. If a title could match more than one book, it waits for you to pick.</p>
+        <div class="bulk-grid">
+          <div>
+            <label for="bulk-text">List of titles or ISBNs</label>
+            <textarea id="bulk-text" rows="8" placeholder="One book per line, for example:&#10;9780553293357&#10;The Night Circus by Erin Morgenstern&#10;Gone Girl x2"></textarea>
+            <div class="actions">
+              <button class="primary" id="bulk-add-text">Add list</button>
+              <button id="bulk-file-btn">Upload CSV or text file…</button>
+              <input type="file" id="bulk-file" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden>
+            </div>
+            <p class="hint">Add “ x2” to a line for 2 copies. A CSV needs a <b>Title</b> or <b>ISBN</b> column; <b>Author</b> and <b>Quantity</b> columns are optional.</p>
+          </div>
+          <div>
+            <label>Photos</label>
+            <div class="dropzone" id="bulk-drop">
+              <p>Drop photos here, or</p>
+              <button id="bulk-photo-btn">Choose photos…</button>
+              <p class="hint">Covers, barcodes, or a stack of spines — every book that can be read is added.</p>
+            </div>
+            <input type="file" id="bulk-photos" accept="image/*" multiple hidden>
+          </div>
+        </div>
+        <div class="notice" id="bulk-msg"></div>
+      </div>
+
+      <div class="card" id="bulk-queue-card" hidden>
+        <div class="toolbar">
+          <h2 style="margin:0">Queue</h2>
+          <span class="hint" id="bulk-summary"></span>
+          <span class="spacer"></span>
+          <button id="bulk-pause">Pause</button>
+          <button id="bulk-clear">Clear finished</button>
+        </div>
+        <table class="inv bulk">
+          <thead><tr><th>#</th><th>Entry</th><th></th><th>Book</th><th>Status</th><th></th></tr></thead>
+          <tbody id="bulk-body"></tbody>
+        </table>
       </div>
     </section>
 
@@ -83,6 +128,7 @@
         </select>
         <span class="spacer"></span>
         <span class="hint" id="inv-selected"></span>
+        <button class="danger" id="delete-btn" disabled title="Tick the books to delete first">Delete selected</button>
         <button id="export-btn">Export CSV</button>
         <button class="primary" id="labels-btn">Print labels</button>
       </div>
@@ -96,7 +142,7 @@
         </thead>
         <tbody id="inv-body"></tbody>
       </table>
-      <p class="hint" style="margin-top:.6rem">Export and Print use the checked rows, or every row shown if none are checked.</p>
+      <p class="hint" style="margin-top:.6rem">Export and Print use the checked rows, or every row shown if none are checked. Delete only ever uses checked rows.</p>
     </section>
 
     <!-- SETTINGS -->
@@ -129,6 +175,21 @@
         <button class="danger" id="edit-delete">Delete book</button>
       </div>
       <div class="history" id="edit-history"></div>
+    </div>
+  </dialog>
+
+  <dialog id="del-dlg">
+    <div class="dlg-body">
+      <h2 id="del-title">Delete books?</h2>
+      <p>These books and their stock history will be <b>permanently removed</b>. This can't be undone.</p>
+      <div class="del-list-wrap"><ul id="del-list"></ul></div>
+      <p class="hint" id="del-totals"></p>
+      <div class="actions">
+        <button id="del-export" title="Download these books as a CSV before deleting">Save CSV first</button>
+        <span style="flex:1"></span>
+        <button id="del-cancel">Cancel</button>
+        <button class="primary danger-fill" id="del-confirm">Delete</button>
+      </div>
     </div>
   </dialog>
 

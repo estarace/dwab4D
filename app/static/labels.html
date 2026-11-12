@@ -41,6 +41,21 @@
     .lbl-desc { font-family: Georgia, "Times New Roman", serif; line-height: 1.3; flex: 1; }
     .lbl-code { font: .75em ui-monospace, monospace; color: #666; text-align: right; margin-top: .2em; }
 
+    .counts-wrap { max-height: 32vh; overflow: auto; margin-top: .4rem; border: 1px solid var(--line); border-radius: 8px; }
+    table.counts { border-collapse: collapse; width: 100%; font-size: .9rem; }
+    table.counts th, table.counts td { padding: .3rem .6rem; border-bottom: 1px solid var(--line); text-align: left; }
+    table.counts th { position: sticky; top: 0; background: #fcfaf7; font-size: .72rem; text-transform: uppercase; color: var(--muted); }
+    table.counts td.code { font-family: ui-monospace, monospace; font-size: .8rem; color: var(--muted); }
+    table.counts input { width: 4.2rem; }
+    table.counts tr.none td { color: var(--muted); }
+    dialog { border: none; border-radius: 12px; padding: 1.4rem 1.6rem; max-width: 520px; box-shadow: 0 20px 60px rgba(0,0,0,.25); }
+    dialog::backdrop { background: rgba(40,30,25,.45); }
+    dialog h2 { font: 600 1.2rem Georgia, serif; margin: 0 0 .5rem; }
+    dialog ul { max-height: 40vh; overflow: auto; padding-left: 1.2rem; }
+    dialog .btns { display: flex; gap: .6rem; justify-content: flex-end; margin-top: 1rem; }
+    dialog button { font: inherit; padding: .45rem .9rem; border-radius: 7px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+    dialog button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+    .msg { margin: .5rem 0 0; font-size: .9rem; color: #24613a; }
     .empty { padding: 4rem; text-align: center; color: var(--muted); }
 
     @media print {
@@ -68,7 +83,7 @@
           <option value="custom">Custom…</option>
         </select>
       </div>
-      <div><label>Font size (pt)</label><input type="number" id="font_pt" min="5" max="20" step="0.5"></div>
+      <div><label title="Text is made as large as fits, up to this size">Max font (pt)</label><input type="number" id="font_pt" min="5" max="28" step="0.5"></div>
       <div><label title="Skip label positions already used on a partly-used sheet">Skip first</label><input type="number" id="skip" min="0" step="1"></div>
       <div class="checks">
         <label><input type="checkbox" id="show_category"> Category</label>
@@ -77,12 +92,26 @@
         <label><input type="checkbox" id="show_description"> Description</label>
         <label><input type="checkbox" id="show_code"> Inventory code</label>
         <label><input type="checkbox" id="show_border"> Print border</label>
-        <label title="Print as many labels as the quantity in stock"><input type="checkbox" id="one_per_copy"> One per copy</label>
       </div>
       <span style="flex:1"></span>
       <button id="save-default">Save as default</button>
+      <button id="subtract-btn" title="Remove the printed labels' copies from inventory">Subtract from inventory…</button>
       <button class="primary" onclick="window.print()">Print</button>
     </div>
+    <details id="counts-box" open>
+      <summary>How many labels per book</summary>
+      <div class="counts-wrap">
+        <table class="counts">
+          <thead><tr><th>Book</th><th>Code</th><th>In stock</th><th>Labels to print</th></tr></thead>
+          <tbody id="counts-body"></tbody>
+        </table>
+      </div>
+      <div class="bar" style="margin-top:.4rem">
+        <button id="all-one">1 of each</button>
+        <button id="all-stock">All copies in stock</button>
+        <button id="all-zero">None</button>
+      </div>
+    </details>
     <details id="custom-box">
       <summary>Size &amp; layout (inches)</summary>
       <div class="bar">
@@ -104,10 +133,20 @@
         <div style="flex: 1 1 220px"><label>Header text (optional)</label><input type="text" id="header_text" placeholder="e.g. Blind Date with a Book" style="width:100%"></div>
       </div>
     </details>
-    <p class="hint">Before using real label sheets, print one page on plain paper and hold it up to a label sheet against a light. In the print dialog, set <b>Margins: None</b> and <b>Scale: 100%</b> (turn off “Fit to page”). Text shrinks automatically when a description is too long for a label.</p>
+    <p class="hint">Before using real label sheets, print one page on plain paper and hold it up to a label sheet against a light. In the print dialog, set <b>Margins: None</b> and <b>Scale: 100%</b> (turn off “Fit to page”). Text is sized to fill each label, up to the max font size.</p>
   </div>
 
   <div class="sheets" id="sheets"></div>
+
+  <dialog id="dec-dlg">
+    <h2>Subtract printed labels from inventory?</h2>
+    <p>If these labels were printed for books you're wrapping, remove those copies from stock:</p>
+    <ul id="dec-list"></ul>
+    <div class="btns">
+      <button id="dec-no">Not now</button>
+      <button class="primary" id="dec-yes">Subtract from inventory</button>
+    </div>
+  </dialog>
 
 <script>
 "use strict";
@@ -119,12 +158,13 @@ const PRESETS = {
   thermal4x3: { page: "label", width_in: 4, height_in: 3, columns: 1, rows: 1, margin_top_in: 0, margin_left_in: 0, gap_x_in: 0, gap_y_in: 0 },
 };
 const NUM = ["width_in", "height_in", "columns", "rows", "margin_top_in", "margin_left_in", "gap_x_in", "gap_y_in", "font_pt", "skip"];
-const BOOL = ["show_category", "show_subgenre", "show_age", "show_description", "show_code", "show_border", "one_per_copy"];
+const BOOL = ["show_category", "show_subgenre", "show_age", "show_description", "show_code", "show_border"];
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 let S = {};
 let books = [];
+const counts = {}; // book id -> labels to print (0..quantity)
 
 function readControls() {
   S.preset = $("preset").value;
@@ -174,12 +214,13 @@ function render() {
   const skip = S.page === "label" ? 0 : S.skip;
   for (let i = 0; i < skip; i++) items.push(null);
   for (const b of books) {
-    const n = S.one_per_copy ? Math.max(1, b.quantity) : 1;
+    const n = counts[b.id] || 0;
     for (let i = 0; i < n; i++) items.push(b);
   }
   const labelCount = items.length - skip;
+  const withLabels = books.filter((b) => counts[b.id] > 0).length;
   $("count").textContent = books.length
-    ? `${labelCount} label${labelCount === 1 ? "" : "s"} for ${books.length} book${books.length === 1 ? "" : "s"}`
+    ? `${labelCount} label${labelCount === 1 ? "" : "s"} for ${withLabels} book${withLabels === 1 ? "" : "s"}`
     : "";
 
   const container = $("sheets");
@@ -204,14 +245,17 @@ function render() {
   fitText();
 }
 
-// Shrink the font on any label whose text overflows.
+// Use the largest font (up to the chosen maximum) that fits each label.
 function fitText() {
+  const fits = (el, pt) => { el.style.fontSize = pt + "pt"; return el.scrollHeight <= el.clientHeight + 1; };
   document.querySelectorAll(".lbl:not(.blank)").forEach((el) => {
-    let pt = S.font_pt;
-    while (el.scrollHeight > el.clientHeight + 1 && pt > 5.5) {
-      pt -= 0.5;
-      el.style.fontSize = pt + "pt";
+    let lo = 5, hi = Math.max(5, S.font_pt);
+    if (fits(el, hi)) return;
+    while (hi - lo > 0.25) {
+      const mid = (lo + hi) / 2;
+      if (fits(el, mid)) lo = mid; else hi = mid;
     }
+    fits(el, Math.floor(lo * 4) / 4);
   });
 }
 
@@ -232,7 +276,82 @@ function onChange(e) {
   render();
 }
 
-document.querySelector(".controls").addEventListener("input", onChange);
+document.querySelector(".controls").addEventListener("input", (e) => {
+  if (e.target.dataset.book) return onCount(e);
+  onChange(e);
+});
+
+// ----- per-book label counts -----
+function clampCount(b, n) { return Math.max(0, Math.min(b.quantity, Math.round(n) || 0)); }
+
+function renderCounts() {
+  $("counts-body").innerHTML = books.map((b) => `
+    <tr class="${b.quantity ? "" : "none"}">
+      <td>${esc(b.title)}</td>
+      <td class="code">${esc(b.inventory_code)}</td>
+      <td>${b.quantity}</td>
+      <td>${b.quantity
+        ? `<input type="number" min="0" max="${b.quantity}" step="1" value="${counts[b.id]}" data-book="${b.id}">`
+        : "<em>none in stock</em>"}</td>
+    </tr>`).join("");
+}
+
+function onCount(e) {
+  const b = books.find((x) => x.id === +e.target.dataset.book);
+  const n = clampCount(b, parseFloat(e.target.value));
+  counts[b.id] = n;
+  if (e.target.value !== "" && +e.target.value !== n) e.target.value = n;
+  render();
+}
+
+function setAll(fn) {
+  books.forEach((b) => (counts[b.id] = clampCount(b, fn(b))));
+  renderCounts();
+  render();
+}
+$("all-one").addEventListener("click", () => setAll(() => 1));
+$("all-stock").addEventListener("click", () => setAll((b) => b.quantity));
+$("all-zero").addEventListener("click", () => setAll(() => 0));
+
+// ----- subtract printed copies from inventory -----
+function printedList() {
+  return books.filter((b) => counts[b.id] > 0).map((b) => ({ b, n: counts[b.id] }));
+}
+
+function askSubtract() {
+  const list = printedList();
+  if (!list.length) return;
+  $("dec-list").innerHTML = list.map(({ b, n }) =>
+    `<li>${esc(b.title)} <span class="hint">(${esc(b.inventory_code)})</span>: −${n} → ${b.quantity - n} left</li>`).join("");
+  $("dec-dlg").showModal();
+}
+$("subtract-btn").addEventListener("click", () => {
+  if (!printedList().length) return alert("No labels are set to print.");
+  askSubtract();
+});
+window.addEventListener("afterprint", () => setTimeout(askSubtract, 300));
+$("dec-no").addEventListener("click", () => $("dec-dlg").close());
+$("dec-yes").addEventListener("click", async () => {
+  const list = printedList();
+  const r = await fetch("/api/books/quantities", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ changes: list.map(({ b, n }) => ({ id: b.id, change: -n })), note: "labels printed" }),
+  });
+  $("dec-dlg").close();
+  if (!r.ok) return alert("Couldn't update inventory — please try again.");
+  const updated = await r.json();
+  for (const u of updated) {
+    const b = books.find((x) => x.id === u.id);
+    if (b) { b.quantity = u.quantity; counts[b.id] = clampCount(b, counts[b.id]); }
+  }
+  const total = list.reduce((t, x) => t + x.n, 0);
+  let m = $("dec-msg");
+  if (!m) { m = document.createElement("p"); m.id = "dec-msg"; m.className = "msg"; document.querySelector(".controls").appendChild(m); }
+  m.textContent = `Inventory updated: removed ${total} cop${total === 1 ? "y" : "ies"} across ${list.length} book${list.length === 1 ? "" : "s"}.`;
+  renderCounts();
+  render();
+});
 
 $("save-default").addEventListener("click", async () => {
   readControls();
@@ -252,8 +371,10 @@ $("save-default").addEventListener("click", async () => {
   if (params.get("sort")) qs.set("sort", params.get("sort"));
   const data = await (await fetch(`/api/labels?${qs}`)).json();
   books = params.get("ids") ? data.books : [];
+  books.forEach((b) => (counts[b.id] = Math.min(1, b.quantity)));
   S = data.settings;
   writeControls();
+  renderCounts();
   render();
 })();
 </script>

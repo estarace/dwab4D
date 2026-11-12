@@ -1,5 +1,6 @@
 """FastAPI app: JSON API + static front end."""
 
+import asyncio
 import csv
 import io
 from datetime import datetime
@@ -11,7 +12,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import ai, db, lookup
+from . import ai, bulk, db, lookup
 from .isbn import normalize
 
 STATIC = Path(__file__).resolve().parent / "static"
@@ -46,7 +47,7 @@ class BookIn(BaseModel):
     work_key: str | None = None
     title: str = Field(min_length=1)
     authors: str | None = None
-    first_published: str | None = None
+    published: str | None = None
     page_count: int | None = None
     cover_url: str | None = None
     category: str | None = None
@@ -62,7 +63,7 @@ class BookPatch(BaseModel):
     title: str | None = None
     authors: str | None = None
     isbn13: str | None = None
-    first_published: str | None = None
+    published: str | None = None
     page_count: int | None = None
     category: str | None = None
     subgenre: str | None = None
@@ -74,6 +75,32 @@ class BookPatch(BaseModel):
 class QuantityIn(BaseModel):
     change: int
     note: str | None = None
+
+
+class QuantityChange(BaseModel):
+    id: int
+    change: int
+
+
+class QuantitiesIn(BaseModel):
+    changes: list[QuantityChange]
+    note: str | None = None
+
+
+class DeleteIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=5000)
+
+
+class BulkParseIn(BaseModel):
+    text: str = Field(max_length=500_000)
+
+
+class BulkItemIn(BaseModel):
+    query: str = ""
+    author: str | None = None
+    quantity: int = Field(default=1, ge=1, le=999)
+    work_key: str | None = None   # set when the user picked a specific match
+    isbn13: str | None = None
 
 
 class SettingsIn(BaseModel):
@@ -125,23 +152,37 @@ async def api_identify(body: IdentifyIn):
     return await _identified(isbn13=isbn, work_key=body.work_key, title=body.title, author=body.author)
 
 
-@app.post("/api/photo")
-async def api_photo(file: UploadFile = File(...)):
+async def _read_photo(file: UploadFile) -> list[dict]:
     data = await file.read()
     if len(data) > MAX_PHOTO_BYTES:
         raise HTTPException(413, "Photo is too large (8 MB max).")
     try:
-        found = await ai.read_photo(data, file.content_type or "")
+        return await ai.read_photo(data, file.content_type or "")
     except ai.AIError as e:
         raise HTTPException(502, str(e)) from e
+
+
+@app.post("/api/photo")
+async def api_photo(file: UploadFile = File(...)):
+    """Single-book flow: identify the (first) book in the photo."""
+    books = await _read_photo(file)
+    if not books:
+        raise HTTPException(422, "Couldn't read a title or ISBN from that photo. Try a clearer shot of the cover or barcode.")
+    found, others = books[0], len(books) - 1
     if found.get("isbn") and (isbn := normalize(found["isbn"])):
         try:
-            return {**(await _identified(isbn13=isbn)), "read": found}
+            return {**(await _identified(isbn13=isbn)), "read": found, "others": others}
         except HTTPException:
             pass  # fall through to title search
     if found.get("title"):
-        return {**(await _search(found["title"], found.get("author"))), "read": found}
+        return {**(await _search(found["title"], found.get("author"))), "read": found, "others": others}
     raise HTTPException(422, "Couldn't read a title or ISBN from that photo. Try a clearer shot of the cover or barcode.")
+
+
+@app.post("/api/photo/read")
+async def api_photo_read(file: UploadFile = File(...)):
+    """Bulk flow: list every book visible in the photo (no lookup)."""
+    return {"books": await _read_photo(file)}
 
 
 @app.post("/api/generate")
@@ -156,8 +197,8 @@ async def api_generate(body: GenerateIn):
 # ---------- inventory ----------
 
 @app.get("/api/books")
-def api_books(sort: str = "created_desc", q: str | None = None):
-    return db.list_books(sort, q)
+def api_books(sort: str = "created_desc", q: str | None = None, ids: str | None = None):
+    return db.list_books(sort, q, _ids(ids))
 
 
 @app.post("/api/books")
@@ -165,7 +206,9 @@ def api_create(body: BookIn):
     data = body.model_dump()
     qty = data.pop("quantity")
     if existing := _existing(data):
-        raise HTTPException(409, {"message": "This book is already in inventory.", "existing": existing})
+        # Already in inventory: add the copies instead of creating a duplicate.
+        book = db.adjust_quantity(existing["id"], max(qty, 1), "entered again")
+        return {**book, "merged": True}
     return db.create_book(data, qty)
 
 
@@ -199,9 +242,83 @@ def api_delete(book_id: int):
     return {"ok": True}
 
 
+@app.post("/api/books/delete")
+def api_delete_many(body: DeleteIn):
+    """Bulk delete; the page asks for confirmation before calling this."""
+    return {"deleted": db.delete_books(list(dict.fromkeys(body.ids)))}
+
+
+@app.post("/api/books/quantities")
+def api_quantities(body: QuantitiesIn):
+    return db.adjust_many([(c.id, c.change) for c in body.changes], body.note)
+
+
+# ---------- bulk entry ----------
+
+_create_lock = asyncio.Lock()
+
+
+def _increment(existing: dict, quantity: int) -> dict:
+    book = db.adjust_quantity(existing["id"], quantity, "entered again (bulk)")
+    return {"status": "incremented", "book": book, "change": quantity}
+
+
+@app.post("/api/bulk/parse")
+def api_bulk_parse(body: BulkParseIn):
+    items = bulk.parse(body.text)
+    if not items:
+        raise HTTPException(400, "No titles or ISBNs found. Put one book per line, or use a CSV with a Title or ISBN column.")
+    return {"items": items}
+
+
+@app.post("/api/bulk/item")
+async def api_bulk_item(body: BulkItemIn):
+    """Identify one book and add it: +quantity if already in inventory, else describe and create."""
+    query = body.query.strip()
+    try:
+        if body.work_key or body.isbn13:
+            book = await lookup.identify(isbn13=normalize(body.isbn13) if body.isbn13 else None,
+                                         work_key=body.work_key, title=query or None, author=body.author)
+        elif isbn := normalize(query):
+            book = await lookup.identify(isbn13=isbn)
+        elif query:
+            candidates = await lookup.search(query, body.author)
+            match = lookup.best_match(query, body.author, candidates)
+            if not match:
+                if not candidates:
+                    return {"status": "not_found", "message": "No book found with that title."}
+                return {"status": "choose", "candidates": candidates[:6]}
+            book = await lookup.identify(isbn13=match.get("isbn13"), work_key=match.get("work_key"),
+                                         title=match.get("title"), author=match.get("authors"))
+            if book and not book.get("cover_url"):
+                book["cover_url"] = match.get("cover_url")
+        else:
+            return {"status": "not_found", "message": "Empty entry."}
+    except httpx.HTTPError as e:
+        return {"status": "error", "message": f"Book database lookup failed: {e}"}
+    if not book:
+        return {"status": "not_found", "message": "No matching book found."}
+
+    if existing := _existing(book):
+        return _increment(existing, body.quantity)
+
+    try:
+        gen = await ai.enrich(book, db.categories(), db.AGE_GROUPS)
+    except ai.AIError as e:
+        return {"status": "error", "message": str(e), "book": book}
+    data = {k: book.get(k) for k in db.BOOK_FIELDS}
+    data.update({k: gen[k] for k in ("category", "subgenre", "age_group", "description")})
+
+    async with _create_lock:  # two rows for the same book can finish at the same time
+        if existing := _existing(book):
+            return _increment(existing, body.quantity)
+        created = db.create_book(data, body.quantity)
+    return {"status": "added", "book": created, "warnings": gen["warnings"]}
+
+
 CSV_COLUMNS = [
     ("inventory_code", "Inventory Code"), ("title", "Title"), ("authors", "Author"),
-    ("isbn13", "ISBN-13"), ("first_published", "First Published"), ("category", "Category"),
+    ("isbn13", "ISBN-13"), ("published", "Publication Date"), ("category", "Category"),
     ("subgenre", "Subgenre"), ("age_group", "Reader Age"), ("description", "Mystery Description"),
     ("quantity", "Quantity"), ("page_count", "Pages"), ("notes", "Notes"),
     ("created_at", "Date Entered"), ("updated_at", "Last Updated"),
